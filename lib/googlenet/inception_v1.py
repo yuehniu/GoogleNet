@@ -112,8 +112,10 @@ class InceptionV1(Net):
     def optimize(self):
         with tf.name_scope('optimizer'):
             optimizer = tf.train.GradientDescentOptimizer(learning_rate=self.config.learning_rate)
+            optimizer = tf.train.SyncReplicasOptimizer(optimizer, replicas_to_aggregate=self.config.update_delays, total_num_replicas=1)
             # optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
             train_op = optimizer.minimize(self.loss, global_step=self.global_step_tensor)
+            self.sync_replicas_hook = optimizer.make_session_run_hook(True)
             return train_op
 
     def build_model(self):

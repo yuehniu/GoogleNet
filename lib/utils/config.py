@@ -28,6 +28,7 @@ class TrainNetConfig(Config):
         self.image_height = self.config['IMAGE_SIZE']['HEIGHT']
         self.image_depth = self.config['IMAGE_SIZE']['DEPTH']
         self.pre_train_weight = self.config['PRE_TRAIN_WEIGHT']
+        self.update_delays = self.config['UPDATE_DELAYS']
 
 
 class TestNetConfig(Config):

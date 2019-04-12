@@ -58,7 +58,8 @@ def train():
     summary_op = tf.summary.merge(summaries)
 
     init = tf.global_variables_initializer()
-    sess = tf.Session()
+    #sess = tf.Session()
+    sess = tf.train.MonitoredTrainingSession(hooks=[net.sync_replicas_hook])
     sess.run(init)
 
     #net.load_with_skip(train_config.pre_train_weight, sess, ['loss3_classifier'])
@@ -81,16 +82,16 @@ def train():
             if step % 50 == 0 or step + 1 == train_config.max_step:
                 print('===TRAIN===: Step: %d, loss: %.4f, accuracy: %.4f%%' % (step, train_loss, train_acc))
                 summary_str = sess.run(summary_op, feed_dict={net.x: train_image, net.y: train_label})
-                train_summary_writer.add_summary(summary_str, step)
+                train_summary_writer.add_summary(summary_str, step/train_config.update_delays)
             if step % 200 == 0 or step + 1 == train_config.max_step:
                 val_image, val_label = sess.run([val_image_batch, val_label_batch])
                 val_loss, val_acc = sess.run([net.loss, net.accuracy], feed_dict={net.x: val_image, net.y: val_label})
                 print('====VAL====: Step %d, val loss = %.4f, val accuracy = %.4f%%' % (step, val_loss, val_acc))
                 summary_str = sess.run(summary_op, feed_dict={net.x: train_image, net.y: train_label})
-                val_summary_writer.add_summary(summary_str, step)
+                val_summary_writer.add_summary(summary_str, step/train_config.update_delays)
             if step % 2000 == 0 or step + 1 == train_config.max_step:
                 checkpoint_path = os.path.join(train_log_dir, 'model.ckpt')
-                saver.save(sess, checkpoint_path, global_step=step)
+                #saver.save(sess, checkpoint_path, global_step=step)
 
     except tf.errors.OutOfRangeError:
         print('===INFO====: Training completed, reaching the maximum number of steps')
