@@ -1,3 +1,5 @@
+import argparse
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
@@ -6,6 +8,7 @@ from lib.data_loader.data_loader import Flowers102DataLoader
 from lib.utils.config import ConfigReader, TrainNetConfig, DataConfig
 from lib.googlenet.inception_v1 import InceptionV1
 
+FLAGS = None
 
 def plot_image_test(image_batch, label_batch, train_config):
     with tf.Session() as sess:
@@ -30,7 +33,15 @@ def plot_image_test(image_batch, label_batch, train_config):
         coord.join(threads)
 
 
-def train():
+def train(_):
+    # Configure distibuted machines
+    ps_hosts = FLAGS.ps_hosts.split(",")
+    worker_hosts = FLAGS.worker_hosts.split(",")
+    cluster = tf.train.ClusterSpec({"ps": ps_hosts, "worker": worker_hosts})
+    # Create and start a server
+    server = tf.train.Server(cluster, job_name=FLAGS.job_name, task_index=FLAGS.task_index)
+
+    
     config_reader = ConfigReader('experiments/configs/inception_v1.yml')
     train_config = TrainNetConfig(config_reader.get_train_config())
     data_config = DataConfig(config_reader.get_train_config())
@@ -43,7 +54,10 @@ def train():
     if not os.path.exists(val_log_dir):
         os.makedirs(val_log_dir)
 
-    net = InceptionV1(train_config)
+    if FLAGS.job_name == "ps":
+        server.join()
+    else:
+        net = InceptionV1(train_config, cluster, FLAGS.task_index)
 
     with tf.name_scope('input'):
         train_loader = Flowers102DataLoader(data_config, is_train=True, is_shuffle=True)
@@ -59,7 +73,10 @@ def train():
 
     init = tf.global_variables_initializer()
     #sess = tf.Session()
-    sess = tf.train.MonitoredTrainingSession(hooks=[net.sync_replicas_hook])
+    sess = tf.train.MonitoredTrainingSession(
+        master = server.target,
+        is_chief=(FLAGS.task_index==0),
+        hooks=net.sync_replicas_hook)
     sess.run(init)
 
     #net.load_with_skip(train_config.pre_train_weight, sess, ['loss3_classifier'])
@@ -92,6 +109,7 @@ def train():
             if step % 2000 == 0 or step + 1 == train_config.max_step:
                 checkpoint_path = os.path.join(train_log_dir, 'model.ckpt')
                 #saver.save(sess, checkpoint_path, global_step=step)
+            print("Step: %d" % (step))
 
     except tf.errors.OutOfRangeError:
         print('===INFO====: Training completed, reaching the maximum number of steps')
@@ -103,4 +121,10 @@ def train():
 
 
 if __name__ == '__main__':
-    train()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ps_hosts", type=str, default="", help="Parameter server host:port")
+    parser.add_argument("--worker_hosts", type=str, default="", help="Worker server host:port")
+    parser.add_argument("--job_name", type=str, default="", help="ps or worker")
+    parser.add_argument("--task_index", type=int, default=0, help="Index of task within the job")
+    FLAGS, unparsed = parser.parse_known_args()
+    tf.app.run(main=train)
