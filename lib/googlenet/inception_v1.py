@@ -4,7 +4,7 @@ from lib.networks.base_network import Net
 
 
 class InceptionV1(Net):
-    def __init__(self, cfg_, Cluster, Taskindx):
+    def __init__(self, cfg_, Taskindx):
         super().__init__(cfg_)
         self.x = tf.placeholder(tf.float32, name='x', shape=[self.config.batch_size,
                                                              self.config.image_width,
@@ -16,7 +16,6 @@ class InceptionV1(Net):
         self.accuracy = None
         self.summary = []
 
-        self.cluster = Cluster
         self.task_indx = Taskindx
 
     def init_saver(self):
@@ -115,124 +114,120 @@ class InceptionV1(Net):
     def optimize(self):
         with tf.name_scope('optimizer'):
             optimizer = tf.train.GradientDescentOptimizer(learning_rate=self.config.learning_rate)
-            #optimizer = tf.train.SyncReplicasOptimizer(optimizer, replicas_to_aggregate=self.config.update_delays, total_num_replicas=1)
+            optimizer = tf.train.SyncReplicasOptimizer(optimizer, replicas_to_aggregate=self.config.update_delays, total_num_replicas=1)
             # optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
+            self.sync_replicas_hook = optimizer.make_session_run_hook(self.task_indx==0)
             train_op = optimizer.minimize(self.loss, global_step=self.global_step_tensor)
-            #self.sync_replicas_hook = optimizer.make_session_run_hook(self.task_indx==0)
-            self.sync_replicas_hook = [tf.train.StopAtStepHook(last_step=1000000)]
+            self.sync_replicas_hook = [self.sync_replicas_hook, tf.train.StopAtStepHook(last_step=self.config.max_step)]
             return train_op
 
     def build_model(self):
-        with tf.device(tf.train.replica_device_setter(
-            worker_device="/job:worker/task:%d" %self.task_indx,
-            cluster = self.cluster)):
+        conv1_7x7_s2 = self.conv2d('conv1_7x7_s2', self.x, 64, 7, 2)
+        pool1_3x3_s2 = self.max_pool('pool1_3x3_s2', conv1_7x7_s2, 3, 2)
+        pool1_norm1 = self.lrn('pool1_norm1', pool1_3x3_s2)
+        conv2_3x3_reduce = self.conv2d('conv2_3x3_reduce', pool1_norm1, 64, 1, 1)
+        conv2_3x3 = self.conv2d('conv2_3x3', conv2_3x3_reduce, 192, 3, 1)
+        conv2_norm2 = self.lrn('conv2_norm2', conv2_3x3)
+        pool2_3x3_s2 = self.max_pool('pool2_3x3_s2', conv2_norm2, 3, 2)
 
-            conv1_7x7_s2 = self.conv2d('conv1_7x7_s2', self.x, 64, 7, 2)
-            pool1_3x3_s2 = self.max_pool('pool1_3x3_s2', conv1_7x7_s2, 3, 2)
-            pool1_norm1 = self.lrn('pool1_norm1', pool1_3x3_s2)
-            conv2_3x3_reduce = self.conv2d('conv2_3x3_reduce', pool1_norm1, 64, 1, 1)
-            conv2_3x3 = self.conv2d('conv2_3x3', conv2_3x3_reduce, 192, 3, 1)
-            conv2_norm2 = self.lrn('conv2_norm2', conv2_3x3)
-            pool2_3x3_s2 = self.max_pool('pool2_3x3_s2', conv2_norm2, 3, 2)
+        inception_3a_1x1 = self.conv2d('inception_3a_1x1', pool2_3x3_s2, 64, 1, 1)
+        inception_3a_3x3_reduce = self.conv2d('inception_3a_3x3_reduce', pool2_3x3_s2, 96, 1, 1)
+        inception_3a_3x3 = self.conv2d('inception_3a_3x3', inception_3a_3x3_reduce, 128, 3, 1)
+        inception_3a_5x5_reduce = self.conv2d('inception_3a_5x5_reduce', pool2_3x3_s2, 16, 1, 1)
+        inception_3a_5x5 = self.conv2d('inception_3a_5x5', inception_3a_5x5_reduce, 32, 5, 1)
+        inception_3a_pool = self.max_pool('inception_3a_pool', pool2_3x3_s2, 3, 1)
+        inception_3a_pool_proj = self.conv2d('inception_3a_pool_proj', inception_3a_pool, 32, 1, 1)
+        inception_3a_output = self.concat('inception_3a_output', [inception_3a_1x1, inception_3a_3x3, inception_3a_5x5,
+                                                                  inception_3a_pool_proj])
 
-            inception_3a_1x1 = self.conv2d('inception_3a_1x1', pool2_3x3_s2, 64, 1, 1)
-            inception_3a_3x3_reduce = self.conv2d('inception_3a_3x3_reduce', pool2_3x3_s2, 96, 1, 1)
-            inception_3a_3x3 = self.conv2d('inception_3a_3x3', inception_3a_3x3_reduce, 128, 3, 1)
-            inception_3a_5x5_reduce = self.conv2d('inception_3a_5x5_reduce', pool2_3x3_s2, 16, 1, 1)
-            inception_3a_5x5 = self.conv2d('inception_3a_5x5', inception_3a_5x5_reduce, 32, 5, 1)
-            inception_3a_pool = self.max_pool('inception_3a_pool', pool2_3x3_s2, 3, 1)
-            inception_3a_pool_proj = self.conv2d('inception_3a_pool_proj', inception_3a_pool, 32, 1, 1)
-            inception_3a_output = self.concat('inception_3a_output', [inception_3a_1x1, inception_3a_3x3, inception_3a_5x5,
-                                                                      inception_3a_pool_proj])
+        inception_3b_1x1 = self.conv2d('inception_3b_1x1', inception_3a_output, 128, 1, 1)
+        inception_3b_3x3_reduce = self.conv2d('inception_3b_3x3_reduce', inception_3a_output, 128, 1, 1)
+        inception_3b_3x3 = self.conv2d('inception_3b_3x3', inception_3b_3x3_reduce, 192, 3, 1)
+        inception_3b_5x5_reduce = self.conv2d('inception_3b_5x5_reduce', inception_3a_output, 32, 1, 1)
+        inception_3b_5x5 = self.conv2d('inception_3b_5x5', inception_3b_5x5_reduce, 96, 5, 1)
+        inception_3b_pool = self.max_pool('inception_3b_pool', inception_3a_output, 3, 1)
+        inception_3b_pool_proj = self.conv2d('inception_3b_pool_proj', inception_3b_pool, 64, 1, 1)
+        inception_3b_output = self.concat('inception_3b_output', [inception_3b_1x1, inception_3b_3x3, inception_3b_5x5,
+                                                                  inception_3b_pool_proj])
 
-            inception_3b_1x1 = self.conv2d('inception_3b_1x1', inception_3a_output, 128, 1, 1)
-            inception_3b_3x3_reduce = self.conv2d('inception_3b_3x3_reduce', inception_3a_output, 128, 1, 1)
-            inception_3b_3x3 = self.conv2d('inception_3b_3x3', inception_3b_3x3_reduce, 192, 3, 1)
-            inception_3b_5x5_reduce = self.conv2d('inception_3b_5x5_reduce', inception_3a_output, 32, 1, 1)
-            inception_3b_5x5 = self.conv2d('inception_3b_5x5', inception_3b_5x5_reduce, 96, 5, 1)
-            inception_3b_pool = self.max_pool('inception_3b_pool', inception_3a_output, 3, 1)
-            inception_3b_pool_proj = self.conv2d('inception_3b_pool_proj', inception_3b_pool, 64, 1, 1)
-            inception_3b_output = self.concat('inception_3b_output', [inception_3b_1x1, inception_3b_3x3, inception_3b_5x5,
-                                                                      inception_3b_pool_proj])
+        pool3_3x3_s2 = self.max_pool('pool3_3x3_s2', inception_3b_output, 3, 2)
+        inception_4a_1x1 = self.conv2d('inception_4a_1x1', pool3_3x3_s2, 192, 1, 1)
+        inception_4a_3x3_reduce = self.conv2d('inception_4a_3x3_reduce', pool3_3x3_s2, 96, 1, 1)
+        inception_4a_3x3 = self.conv2d('inception_4a_3x3', inception_4a_3x3_reduce, 208, 3, 1)
+        inception_4a_5x5_reduce = self.conv2d('inception_4a_5x5_reduce', pool3_3x3_s2, 16, 1, 1)
+        inception_4a_5x5 = self.conv2d('inception_4a_5x5', inception_4a_5x5_reduce, 48, 5, 1)
+        inception_4a_pool = self.max_pool('inception_4a_pool', pool3_3x3_s2, 3, 1)
+        inception_4a_pool_proj = self.conv2d('inception_4a_pool_proj', inception_4a_pool, 64, 1, 1)
+        inception_4a_output = self.concat('inception_4a_output', [inception_4a_1x1, inception_4a_3x3, inception_4a_5x5,
+                                                                  inception_4a_pool_proj])
 
-            pool3_3x3_s2 = self.max_pool('pool3_3x3_s2', inception_3b_output, 3, 2)
-            inception_4a_1x1 = self.conv2d('inception_4a_1x1', pool3_3x3_s2, 192, 1, 1)
-            inception_4a_3x3_reduce = self.conv2d('inception_4a_3x3_reduce', pool3_3x3_s2, 96, 1, 1)
-            inception_4a_3x3 = self.conv2d('inception_4a_3x3', inception_4a_3x3_reduce, 208, 3, 1)
-            inception_4a_5x5_reduce = self.conv2d('inception_4a_5x5_reduce', pool3_3x3_s2, 16, 1, 1)
-            inception_4a_5x5 = self.conv2d('inception_4a_5x5', inception_4a_5x5_reduce, 48, 5, 1)
-            inception_4a_pool = self.max_pool('inception_4a_pool', pool3_3x3_s2, 3, 1)
-            inception_4a_pool_proj = self.conv2d('inception_4a_pool_proj', inception_4a_pool, 64, 1, 1)
-            inception_4a_output = self.concat('inception_4a_output', [inception_4a_1x1, inception_4a_3x3, inception_4a_5x5,
-                                                                      inception_4a_pool_proj])
+        inception_4b_1x1 = self.conv2d('inception_4b_1x1', inception_4a_output, 160, 1, 1)
+        inception_4b_3x3_reduce = self.conv2d('inception_4b_3x3_reduce', inception_4a_output, 112, 1, 1)
+        inception_4b_3x3 = self.conv2d('inception_4b_3x3', inception_4b_3x3_reduce, 224, 3, 1)
+        inception_4b_5x5_reduce = self.conv2d('inception_4b_5x5_reduce', inception_4a_output, 24, 1, 1)
+        inception_4b_5x5 = self.conv2d('inception_4b_5x5', inception_4b_5x5_reduce, 64, 5, 1)
+        inception_4b_pool = self.max_pool('inception_4b_pool', inception_4a_output, 3, 1)
+        inception_4b_pool_proj = self.conv2d('inception_4b_pool_proj', inception_4b_pool, 64, 1, 1)
+        inception_4b_output = self.concat('inception_4b_output', [inception_4b_1x1, inception_4b_3x3, inception_4b_5x5,
+                                                                  inception_4b_pool_proj])
 
-            inception_4b_1x1 = self.conv2d('inception_4b_1x1', inception_4a_output, 160, 1, 1)
-            inception_4b_3x3_reduce = self.conv2d('inception_4b_3x3_reduce', inception_4a_output, 112, 1, 1)
-            inception_4b_3x3 = self.conv2d('inception_4b_3x3', inception_4b_3x3_reduce, 224, 3, 1)
-            inception_4b_5x5_reduce = self.conv2d('inception_4b_5x5_reduce', inception_4a_output, 24, 1, 1)
-            inception_4b_5x5 = self.conv2d('inception_4b_5x5', inception_4b_5x5_reduce, 64, 5, 1)
-            inception_4b_pool = self.max_pool('inception_4b_pool', inception_4a_output, 3, 1)
-            inception_4b_pool_proj = self.conv2d('inception_4b_pool_proj', inception_4b_pool, 64, 1, 1)
-            inception_4b_output = self.concat('inception_4b_output', [inception_4b_1x1, inception_4b_3x3, inception_4b_5x5,
-                                                                      inception_4b_pool_proj])
+        inception_4c_1x1 = self.conv2d('inception_4c_1x1', inception_4b_output, 128, 1, 1)
+        inception_4c_3x3_reduce = self.conv2d('inception_4c_3x3_reduce', inception_4b_output, 128, 1, 1)
+        inception_4c_3x3 = self.conv2d('inception_4c_3x3', inception_4c_3x3_reduce, 256, 3, 1)
+        inception_4c_5x5_reduce = self.conv2d('inception_4c_5x5_reduce', inception_4b_output, 24, 1, 1)
+        inception_4c_5x5 = self.conv2d('inception_4c_5x5', inception_4c_5x5_reduce, 64, 5, 1)
+        inception_4c_pool = self.max_pool('inception_4c_pool', inception_4b_output, 3, 1)
+        inception_4c_pool_proj = self.conv2d('inception_4c_pool_proj', inception_4c_pool, 64, 1, 1)
+        inception_4c_output = self.concat('inception_4c_output', [inception_4c_1x1, inception_4c_3x3, inception_4c_5x5,
+                                                                  inception_4c_pool_proj])
 
-            inception_4c_1x1 = self.conv2d('inception_4c_1x1', inception_4b_output, 128, 1, 1)
-            inception_4c_3x3_reduce = self.conv2d('inception_4c_3x3_reduce', inception_4b_output, 128, 1, 1)
-            inception_4c_3x3 = self.conv2d('inception_4c_3x3', inception_4c_3x3_reduce, 256, 3, 1)
-            inception_4c_5x5_reduce = self.conv2d('inception_4c_5x5_reduce', inception_4b_output, 24, 1, 1)
-            inception_4c_5x5 = self.conv2d('inception_4c_5x5', inception_4c_5x5_reduce, 64, 5, 1)
-            inception_4c_pool = self.max_pool('inception_4c_pool', inception_4b_output, 3, 1)
-            inception_4c_pool_proj = self.conv2d('inception_4c_pool_proj', inception_4c_pool, 64, 1, 1)
-            inception_4c_output = self.concat('inception_4c_output', [inception_4c_1x1, inception_4c_3x3, inception_4c_5x5,
-                                                                      inception_4c_pool_proj])
+        inception_4d_1x1 = self.conv2d('inception_4d_1x1', inception_4c_output, 112, 1, 1)
+        inception_4d_3x3_reduce = self.conv2d('inception_4d_3x3_reduce', inception_4c_output, 144, 1, 1)
+        inception_4d_3x3 = self.conv2d('inception_4d_3x3', inception_4d_3x3_reduce, 288, 3, 1)
+        inception_4d_5x5_reduce = self.conv2d('inception_4d_5x5_reduce', inception_4c_output, 32, 1, 1)
+        inception_4d_5x5 = self.conv2d('inception_4d_5x5', inception_4d_5x5_reduce, 64, 5, 1)
+        inception_4d_pool = self.max_pool('inception_4d_pool', inception_4c_output, 3, 1)
+        inception_4d_pool_proj = self.conv2d('inception_4d_pool_proj', inception_4d_pool, 64, 1, 1)
+        inception_4d_output = self.concat('inception_4d_output', [inception_4d_1x1, inception_4d_3x3, inception_4d_5x5,
+                                                                  inception_4d_pool_proj])
 
-            inception_4d_1x1 = self.conv2d('inception_4d_1x1', inception_4c_output, 112, 1, 1)
-            inception_4d_3x3_reduce = self.conv2d('inception_4d_3x3_reduce', inception_4c_output, 144, 1, 1)
-            inception_4d_3x3 = self.conv2d('inception_4d_3x3', inception_4d_3x3_reduce, 288, 3, 1)
-            inception_4d_5x5_reduce = self.conv2d('inception_4d_5x5_reduce', inception_4c_output, 32, 1, 1)
-            inception_4d_5x5 = self.conv2d('inception_4d_5x5', inception_4d_5x5_reduce, 64, 5, 1)
-            inception_4d_pool = self.max_pool('inception_4d_pool', inception_4c_output, 3, 1)
-            inception_4d_pool_proj = self.conv2d('inception_4d_pool_proj', inception_4d_pool, 64, 1, 1)
-            inception_4d_output = self.concat('inception_4d_output', [inception_4d_1x1, inception_4d_3x3, inception_4d_5x5,
-                                                                      inception_4d_pool_proj])
+        inception_4e_1x1 = self.conv2d('inception_4e_1x1', inception_4d_output, 256, 1, 1)
+        inception_4e_3x3_reduce = self.conv2d('inception_4e_3x3_reduce', inception_4d_output, 160, 1, 1)
+        inception_4e_3x3 = self.conv2d('inception_4e_3x3', inception_4e_3x3_reduce, 320, 3, 1)
+        inception_4e_5x5_reduce = self.conv2d('inception_4e_5x5_reduce', inception_4d_output, 32, 1, 1)
+        inception_4e_5x5 = self.conv2d('inception_4e_5x5', inception_4e_5x5_reduce, 128, 5, 1)
+        inception_4e_pool = self.max_pool('inception_4e_pool', inception_4d_output, 3, 1)
+        inception_4e_pool_proj = self.conv2d('inception_4e_pool_proj', inception_4e_pool, 128, 1, 1)
+        inception_4e_output = self.concat('inception_4e_output', [inception_4e_1x1, inception_4e_3x3, inception_4e_5x5,
+                                                                  inception_4e_pool_proj])
 
-            inception_4e_1x1 = self.conv2d('inception_4e_1x1', inception_4d_output, 256, 1, 1)
-            inception_4e_3x3_reduce = self.conv2d('inception_4e_3x3_reduce', inception_4d_output, 160, 1, 1)
-            inception_4e_3x3 = self.conv2d('inception_4e_3x3', inception_4e_3x3_reduce, 320, 3, 1)
-            inception_4e_5x5_reduce = self.conv2d('inception_4e_5x5_reduce', inception_4d_output, 32, 1, 1)
-            inception_4e_5x5 = self.conv2d('inception_4e_5x5', inception_4e_5x5_reduce, 128, 5, 1)
-            inception_4e_pool = self.max_pool('inception_4e_pool', inception_4d_output, 3, 1)
-            inception_4e_pool_proj = self.conv2d('inception_4e_pool_proj', inception_4e_pool, 128, 1, 1)
-            inception_4e_output = self.concat('inception_4e_output', [inception_4e_1x1, inception_4e_3x3, inception_4e_5x5,
-                                                                      inception_4e_pool_proj])
+        pool4_3x3_s2 = self.max_pool('pool4_3x3_s2', inception_4e_output, 3, 2)
+        inception_5a_1x1 = self.conv2d('inception_5a_1x1', pool4_3x3_s2, 256, 1, 1)
+        inception_5a_3x3_reduce = self.conv2d('inception_5a_3x3_reduce', pool4_3x3_s2, 160, 1, 1)
+        inception_5a_3x3 = self.conv2d('inception_5a_3x3', inception_5a_3x3_reduce, 320, 3, 1)
+        inception_5a_5x5_reduce = self.conv2d('inception_5a_5x5_reduce', pool4_3x3_s2, 32, 1, 1)
+        inception_5a_5x5 = self.conv2d('inception_5a_5x5', inception_5a_5x5_reduce, 128, 5, 1)
+        inception_5a_pool = self.max_pool('inception_5a_pool', pool4_3x3_s2, 3, 1)
+        inception_5a_pool_proj = self.conv2d('inception_5a_pool_proj', inception_5a_pool, 128, 1, 1)
+        inception_5a_output = self.concat('inception_5a_output', [inception_5a_1x1, inception_5a_3x3, inception_5a_5x5,
+                                                                  inception_5a_pool_proj])
 
-            pool4_3x3_s2 = self.max_pool('pool4_3x3_s2', inception_4e_output, 3, 2)
-            inception_5a_1x1 = self.conv2d('inception_5a_1x1', pool4_3x3_s2, 256, 1, 1)
-            inception_5a_3x3_reduce = self.conv2d('inception_5a_3x3_reduce', pool4_3x3_s2, 160, 1, 1)
-            inception_5a_3x3 = self.conv2d('inception_5a_3x3', inception_5a_3x3_reduce, 320, 3, 1)
-            inception_5a_5x5_reduce = self.conv2d('inception_5a_5x5_reduce', pool4_3x3_s2, 32, 1, 1)
-            inception_5a_5x5 = self.conv2d('inception_5a_5x5', inception_5a_5x5_reduce, 128, 5, 1)
-            inception_5a_pool = self.max_pool('inception_5a_pool', pool4_3x3_s2, 3, 1)
-            inception_5a_pool_proj = self.conv2d('inception_5a_pool_proj', inception_5a_pool, 128, 1, 1)
-            inception_5a_output = self.concat('inception_5a_output', [inception_5a_1x1, inception_5a_3x3, inception_5a_5x5,
-                                                                      inception_5a_pool_proj])
+        inception_5b_1x1 = self.conv2d('inception_5b_1x1', inception_5a_output, 384, 1, 1)
+        inception_5b_3x3_reduce = self.conv2d('inception_5b_3x3_reduce', inception_5a_output, 192, 1, 1)
+        inception_5b_3x3 = self.conv2d('inception_5b_3x3', inception_5b_3x3_reduce, 384, 3, 1)
+        inception_5b_5x5_reduce = self.conv2d('inception_5b_5x5_reduce', inception_5a_output, 48, 1, 1)
+        inception_5b_5x5 = self.conv2d('inception_5b_5x5', inception_5b_5x5_reduce, 128, 5, 1)
+        inception_5b_pool = self.max_pool('inception_5b_pool', inception_5a_output, 3, 1)
+        inception_5b_pool_proj = self.conv2d('inception_5b_pool_proj', inception_5b_pool, 128, 1, 1)
+        inception_5b_output = self.concat('inception_5b_output', [inception_5b_1x1, inception_5b_3x3, inception_5b_5x5,
+                                                                  inception_5b_pool_proj])
 
-            inception_5b_1x1 = self.conv2d('inception_5b_1x1', inception_5a_output, 384, 1, 1)
-            inception_5b_3x3_reduce = self.conv2d('inception_5b_3x3_reduce', inception_5a_output, 192, 1, 1)
-            inception_5b_3x3 = self.conv2d('inception_5b_3x3', inception_5b_3x3_reduce, 384, 3, 1)
-            inception_5b_5x5_reduce = self.conv2d('inception_5b_5x5_reduce', inception_5a_output, 48, 1, 1)
-            inception_5b_5x5 = self.conv2d('inception_5b_5x5', inception_5b_5x5_reduce, 128, 5, 1)
-            inception_5b_pool = self.max_pool('inception_5b_pool', inception_5a_output, 3, 1)
-            inception_5b_pool_proj = self.conv2d('inception_5b_pool_proj', inception_5b_pool, 128, 1, 1)
-            inception_5b_output = self.concat('inception_5b_output', [inception_5b_1x1, inception_5b_3x3, inception_5b_5x5,
-                                                                      inception_5b_pool_proj])
+        pool5_7x7_s1 = self.avg_pool('pool5_7x7_s1', inception_5b_output, 7, 1)
+        pool5_drop_7x7_s1 = self.dropout('pool5_drop_7x7_s1', pool5_7x7_s1, 0.6)
 
-            pool5_7x7_s1 = self.avg_pool('pool5_7x7_s1', inception_5b_output, 7, 1)
-            pool5_drop_7x7_s1 = self.dropout('pool5_drop_7x7_s1', pool5_7x7_s1, 0.6)
+        self.logits = self.fc('loss3_classifier', pool5_drop_7x7_s1, out_nodes=self.config.n_classes)
 
-            self.logits = self.fc('loss3_classifier', pool5_drop_7x7_s1, out_nodes=self.config.n_classes)
-
-            self.cal_loss(self.logits, self.y)
-            self.cal_accuracy(self.logits, self.y)
-            train_op = self.optimize()
+        self.cal_loss(self.logits, self.y)
+        self.cal_accuracy(self.logits, self.y)
+        train_op = self.optimize()
         return train_op

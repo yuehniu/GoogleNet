@@ -41,7 +41,8 @@ class Net:
     def init_global_step(self):
         # DON'T forget to add the global step tensor to the tensorflow trainer
         with tf.variable_scope('global_step'):
-            self.global_step_tensor = tf.Variable(0, trainable=False, name='global_step')
+            #self.global_step_tensor = tf.Variable(0, trainable=False, name='global_step')
+            self.global_step_tensor = tf.contrib.framework.get_or_create_global_step()
 
     def init_saver(self):
         # just copy the following line in your child class
