@@ -101,11 +101,11 @@ def train(_):
                     _, train_loss, train_acc = sess.run([train_op, net.loss, net.accuracy],
                                                         feed_dict={net.x: train_image, net.y: train_label})
 
-                    if step % 50 == 0 or step + 1 == train_config.max_step:
+                    if step % (50*train_config.update_delays) == 0 or step + 1 == train_config.max_step:
                         print('===TRAIN===: Step: %d, loss: %.4f, accuracy: %.4f%%' % (step, train_loss, train_acc))
                         summary_str = sess.run(summary_op, feed_dict={net.x: train_image, net.y: train_label})
                         train_summary_writer.add_summary(summary_str, step/train_config.update_delays)
-                    if step % 200 == 0 or step + 1 == train_config.max_step:
+                    if step % (200*train_config.update_delays) == 0 or step + 1 == train_config.max_step:
                         pass
                         val_image, val_label = sess.run([val_image_batch, val_label_batch])
                         val_loss, val_acc = sess.run([net.loss, net.accuracy], feed_dict={net.x: val_image, net.y: val_label})
